@@ -458,8 +458,8 @@ class Converter:
                 contents = resp_msg["content"]
 
                 text_segments = []
-                content_parts = []
-                
+                content_parts: list[ChatCompletionContentPartParam] = []
+
                 for c in contents:
                     if c["type"] == "output_text":
                         text_segments.append(c["text"])
@@ -472,15 +472,15 @@ class Converter:
                         )
                     # Handle standard ChatCompletion content types (for compatibility)
                     elif c["type"] == "text":
-                        content_parts.append(ChatCompletionContentPartTextParam(
-                            type="text",
-                            text=c["text"]
-                        ))
+                        content_parts.append(
+                            ChatCompletionContentPartTextParam(type="text", text=c["text"])
+                        )
                     elif c["type"] == "image_url":
-                        content_parts.append(ChatCompletionContentPartImageParam(
-                            type="image_url",
-                            image_url=c["image_url"]
-                        ))
+                        content_parts.append(
+                            ChatCompletionContentPartImageParam(
+                                type="image_url", image_url=c["image_url"]
+                            )
+                        )
                     else:
                         raise UserError(f"Unknown content type in ResponseOutputMessage: {c}")
 

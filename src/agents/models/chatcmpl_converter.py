@@ -486,7 +486,7 @@ class Converter:
 
                 # If we have content parts (text/image_url), use them as an array
                 if content_parts:
-                    new_asst["content"] = content_parts
+                    new_asst["content"] = content_parts  # type: ignore[typeddict-item]
                 # Otherwise, use the combined text segments
                 elif text_segments:
                     combined = "\n".join(text_segments)

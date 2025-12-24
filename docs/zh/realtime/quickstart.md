@@ -4,10 +4,10 @@ search:
 ---
 # 快速开始
 
-实时智能体通过 OpenAI 的 Realtime API 让你的 AI 智能体具备语音对话能力。本指南将带你创建第一个实时语音智能体。
+实时智能体通过 OpenAI 的 Realtime API 实现与 AI 智能体的语音对话。本指南将带你创建第一个实时语音智能体。
 
 !!! warning "测试版功能"
-Realtime 智能体处于测试阶段。随着实现的改进，可能会出现不兼容的变更。
+实时智能体目前处于测试阶段。在我们改进实现期间，可能会有不兼容的变更。
 
 ## 先决条件
 
@@ -111,7 +111,7 @@ def _truncate_str(s: str, max_length: int) -> str:
 
 ## 完整示例
 
-下面是一个可运行的完整示例：
+以下是一个可运行的完整示例：
 
 ```python
 import asyncio
@@ -193,7 +193,7 @@ if __name__ == "__main__":
 ### 模型设置
 
 - `model_name`: 从可用的实时模型中选择（例如，`gpt-realtime`）
-- `voice`: 选择语音（`alloy`、`echo`、`fable`、`onyx`、`nova`、`shimmer`）
+- `voice`: 选择发音人（`alloy`、`echo`、`fable`、`onyx`、`nova`、`shimmer`）
 - `modalities`: 启用文本或音频（`["text"]` 或 `["audio"]`）
 
 ### 音频设置
@@ -206,26 +206,26 @@ if __name__ == "__main__":
 
 - `type`: 检测方法（`server_vad`、`semantic_vad`）
 - `threshold`: 语音活动阈值（0.0-1.0）
-- `silence_duration_ms`: 检测轮次结束的静默时长
-- `prefix_padding_ms`: 说话前的音频填充
+- `silence_duration_ms`: 判定轮次结束的静音时长
+- `prefix_padding_ms`: 语音前的音频填充
 
 ## 后续步骤
 
 - [进一步了解实时智能体](guide.md)
-- 查看 [examples/realtime](https://github.com/openai/openai-agents-python/tree/main/examples/realtime) 文件夹中的可用示例
+- 在 [examples/realtime](https://github.com/openai/openai-agents-python/tree/main/examples/realtime) 文件夹中查看可运行的示例代码
 - 为你的智能体添加工具
 - 在智能体之间实现任务转移
-- 设置安全防护措施以保证安全
+- 配置安全防护措施以确保安全
 
 ## 身份验证
 
-确保在环境中设置了你的 OpenAI API 密钥：
+确保已在环境中设置你的 OpenAI API 密钥：
 
 ```bash
 export OPENAI_API_KEY="your-api-key-here"
 ```
 
-或者在创建会话时直接传入：
+或在创建会话时直接传入：
 
 ```python
 session = await runner.run(model_config={"api_key": "your-api-key"})

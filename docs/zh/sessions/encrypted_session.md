@@ -4,18 +4,18 @@ search:
 ---
 # 加密会话
 
-`EncryptedSession` 为任何会话实现提供透明加密，通过自动过期机制保护会话数据并自动忽略过期项。
+`EncryptedSession` 为任意会话实现提供透明加密，通过自动过期机制保护对话数据中较旧的条目。
 
 ## 功能
 
-- **透明加密**: 使用 Fernet 加密封装任意会话
-- **每会话唯一密钥**: 使用 HKDF 密钥派生，为每个会话生成独立密钥
-- **自动过期**: 当 TTL 过期时，旧项会被静默跳过
-- **可直接替换**: 适用于任何现有会话实现
+- **透明加密**：用 Fernet 加密包装任意会话
+- **按会话独立密钥**：使用 HKDF 密钥派生，为每个会话生成唯一密钥
+- **自动过期**：当 TTL 过期时，旧条目会被静默跳过
+- **可直接替换**：可与任何现有会话实现一起使用
 
 ## 安装
 
-加密会话需要安装 `encrypt` 扩展：
+加密会话需要安装 `encrypt` 可选依赖：
 
 ```bash
 pip install openai-agents[encrypt]
@@ -57,7 +57,7 @@ if __name__ == "__main__":
 
 ### 加密密钥
 
-加密密钥可以是一个 Fernet 密钥或任意字符串：
+加密密钥可以是 Fernet 密钥或任意字符串：
 
 ```python
 from agents.extensions.memory import EncryptedSession
@@ -81,7 +81,7 @@ session = EncryptedSession(
 
 ### TTL（存活时间）
 
-设置加密项保持有效的时长：
+设置加密条目的有效期：
 
 ```python
 # Items expire after 1 hour
@@ -101,9 +101,9 @@ session = EncryptedSession(
 )
 ```
 
-## 与不同会话类型的用法
+## 不同会话类型的用法
 
-### 配合 SQLite 会话
+### 搭配 SQLite 会话
 
 ```python
 from agents import SQLiteSession
@@ -119,7 +119,7 @@ session = EncryptedSession(
 )
 ```
 
-### 配合 SQLAlchemy 会话
+### 搭配 SQLAlchemy 会话
 
 ```python
 from agents.extensions.memory import EncryptedSession, SQLAlchemySession
@@ -140,30 +140,30 @@ session = EncryptedSession(
 
 !!! warning "高级会话功能"
 
-    当将 `EncryptedSession` 与诸如 `AdvancedSQLiteSession` 之类的高级会话实现一起使用时，请注意：
+    将 `EncryptedSession` 与诸如 `AdvancedSQLiteSession` 等高级会话实现一起使用时，请注意：
 
-    - 由于消息内容已被加密，`find_turns_by_content()` 等方法将无法有效工作
-    - 基于内容的检索会在加密数据上进行，从而降低其有效性
+    - 由于消息内容已被加密，诸如 `find_turns_by_content()` 的方法将难以有效工作
+    - 基于内容的搜索会在加密数据上运行，其效果会受到限制
 
 
 
 ## 密钥派生
 
-EncryptedSession 使用 HKDF（基于 HMAC 的密钥派生函数）为每个会话派生唯一的加密密钥：
+EncryptedSession 使用 HKDF（基于 HMAC 的密钥派生函数，HMAC-based Key Derivation Function）为每个会话派生唯一的加密密钥：
 
-- **主密钥**: 你提供的加密密钥
-- **会话盐值**: 会话 ID
-- **Info 字符串**: `"agents.session-store.hkdf.v1"`
-- **输出**: 32 字节 Fernet 密钥
+- **主密钥**：你提供的加密密钥
+- **会话盐值**：会话 ID
+- **Info 字符串**：`"agents.session-store.hkdf.v1"`
+- **输出**：32 字节 Fernet 密钥
 
 这确保了：
 - 每个会话都有唯一的加密密钥
 - 没有主密钥无法推导出各会话密钥
-- 不同会话之间无法互相解密会话数据
+- 不同会话之间的数据无法相互解密
 
 ## 自动过期
 
-当项目超过 TTL 时，在检索时会被自动跳过：
+当条目超过 TTL 时，在检索过程中会被自动跳过：
 
 ```python
 # Items older than TTL are silently ignored

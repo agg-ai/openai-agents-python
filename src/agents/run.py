@@ -64,14 +64,14 @@ from .model_settings import ModelSettings
 from .models.interface import Model, ModelProvider
 from .models.multi_provider import MultiProvider
 from .result import RunResult, RunResultStreaming
-from .run_context import RunContextWrapper, TContext
+from .run_context import AgentHookContext, RunContextWrapper, TContext
 from .stream_events import (
     AgentUpdatedStreamEvent,
     RawResponsesStreamEvent,
     RunItemStreamEvent,
     StreamEvent,
 )
-from .tool import Tool
+from .tool import Tool, dispose_resolved_computers
 from .tool_guardrails import ToolInputGuardrailResult, ToolOutputGuardrailResult
 from .tracing import Span, SpanError, agent_span, get_current_trace, trace
 from .tracing.span_data import AgentSpanData
@@ -129,10 +129,15 @@ class CallModelData(Generic[TContext]):
 @dataclass
 class _ServerConversationTracker:
     """Tracks server-side conversation state for either conversation_id or
-    previous_response_id modes."""
+    previous_response_id modes.
+
+    Note: When auto_previous_response_id=True is used, response chaining is enabled
+    automatically for the first turn, even when there's no actual previous response ID yet.
+    """
 
     conversation_id: str | None = None
     previous_response_id: str | None = None
+    auto_previous_response_id: bool = False
     sent_items: set[int] = field(default_factory=set)
     server_items: set[int] = field(default_factory=set)
 
@@ -140,10 +145,10 @@ class _ServerConversationTracker:
         for output_item in model_response.output:
             self.server_items.add(id(output_item))
 
-        # Update previous_response_id only when using previous_response_id
+        # Update previous_response_id when using previous_response_id mode or auto mode
         if (
             self.conversation_id is None
-            and self.previous_response_id is not None
+            and (self.previous_response_id is not None or self.auto_previous_response_id)
             and model_response.response_id is not None
         ):
             self.previous_response_id = model_response.response_id
@@ -284,6 +289,9 @@ class RunOptions(TypedDict, Generic[TContext]):
     previous_response_id: NotRequired[str | None]
     """The ID of the previous response, if any."""
 
+    auto_previous_response_id: NotRequired[bool]
+    """Enable automatic response chaining for the first turn."""
+
     conversation_id: NotRequired[str | None]
     """The ID of the stored conversation, if any."""
 
@@ -303,6 +311,7 @@ class Runner:
         hooks: RunHooks[TContext] | None = None,
         run_config: RunConfig | None = None,
         previous_response_id: str | None = None,
+        auto_previous_response_id: bool = False,
         conversation_id: str | None = None,
         session: Session | None = None,
     ) -> RunResult:
@@ -363,6 +372,7 @@ class Runner:
             hooks=hooks,
             run_config=run_config,
             previous_response_id=previous_response_id,
+            auto_previous_response_id=auto_previous_response_id,
             conversation_id=conversation_id,
             session=session,
         )
@@ -378,6 +388,7 @@ class Runner:
         hooks: RunHooks[TContext] | None = None,
         run_config: RunConfig | None = None,
         previous_response_id: str | None = None,
+        auto_previous_response_id: bool = False,
         conversation_id: str | None = None,
         session: Session | None = None,
     ) -> RunResult:
@@ -438,6 +449,7 @@ class Runner:
             previous_response_id=previous_response_id,
             conversation_id=conversation_id,
             session=session,
+            auto_previous_response_id=auto_previous_response_id,
         )
 
     @classmethod
@@ -450,6 +462,7 @@ class Runner:
         hooks: RunHooks[TContext] | None = None,
         run_config: RunConfig | None = None,
         previous_response_id: str | None = None,
+        auto_previous_response_id: bool = False,
         conversation_id: str | None = None,
         session: Session | None = None,
     ) -> RunResultStreaming:
@@ -505,6 +518,7 @@ class Runner:
             hooks=hooks,
             run_config=run_config,
             previous_response_id=previous_response_id,
+            auto_previous_response_id=auto_previous_response_id,
             conversation_id=conversation_id,
             session=session,
         )
@@ -527,14 +541,23 @@ class AgentRunner:
         hooks = cast(RunHooks[TContext], self._validate_run_hooks(kwargs.get("hooks")))
         run_config = kwargs.get("run_config")
         previous_response_id = kwargs.get("previous_response_id")
+        auto_previous_response_id = kwargs.get("auto_previous_response_id", False)
         conversation_id = kwargs.get("conversation_id")
         session = kwargs.get("session")
+
         if run_config is None:
             run_config = RunConfig()
 
-        if conversation_id is not None or previous_response_id is not None:
+        # Check whether to enable OpenAI server-managed conversation
+        if (
+            conversation_id is not None
+            or previous_response_id is not None
+            or auto_previous_response_id
+        ):
             server_conversation_tracker = _ServerConversationTracker(
-                conversation_id=conversation_id, previous_response_id=previous_response_id
+                conversation_id=conversation_id,
+                previous_response_id=previous_response_id,
+                auto_previous_response_id=auto_previous_response_id,
             )
         else:
             server_conversation_tracker = None
@@ -577,6 +600,9 @@ class AgentRunner:
             try:
                 while True:
                     all_tools = await AgentRunner._get_all_tools(current_agent, context_wrapper)
+                    await RunImpl.initialize_computer_tools(
+                        tools=all_tools, context_wrapper=context_wrapper
+                    )
 
                     # Start an agent span if we don't have one. This span is ended if the current
                     # agent changes, or if the agent loop ends.
@@ -715,6 +741,15 @@ class AgentRunner:
 
                             return result
                         elif isinstance(turn_result.next_step, NextStepHandoff):
+                            # Save the conversation to session if enabled (before handoff)
+                            if session is not None:
+                                if not any(
+                                    guardrail_result.output.tripwire_triggered
+                                    for guardrail_result in input_guardrail_results
+                                ):
+                                    await self._save_result_to_session(
+                                        session, [], turn_result.new_step_items
+                                    )
                             current_agent = cast(Agent[TContext], turn_result.next_step.new_agent)
                             current_span.finish(reset_current=True)
                             current_span = None
@@ -750,6 +785,10 @@ class AgentRunner:
                 )
                 raise
             finally:
+                try:
+                    await dispose_resolved_computers(run_context=context_wrapper)
+                except Exception as error:
+                    logger.warning("Failed to dispose computers after run: %s", error)
                 if current_span:
                     current_span.finish(reset_current=True)
 
@@ -764,6 +803,7 @@ class AgentRunner:
         hooks = kwargs.get("hooks")
         run_config = kwargs.get("run_config")
         previous_response_id = kwargs.get("previous_response_id")
+        auto_previous_response_id = kwargs.get("auto_previous_response_id", False)
         conversation_id = kwargs.get("conversation_id")
         session = kwargs.get("session")
 
@@ -810,6 +850,7 @@ class AgentRunner:
                 hooks=hooks,
                 run_config=run_config,
                 previous_response_id=previous_response_id,
+                auto_previous_response_id=auto_previous_response_id,
                 conversation_id=conversation_id,
             )
         )
@@ -843,6 +884,7 @@ class AgentRunner:
         hooks = cast(RunHooks[TContext], self._validate_run_hooks(kwargs.get("hooks")))
         run_config = kwargs.get("run_config")
         previous_response_id = kwargs.get("previous_response_id")
+        auto_previous_response_id = kwargs.get("auto_previous_response_id", False)
         conversation_id = kwargs.get("conversation_id")
         session = kwargs.get("session")
 
@@ -898,6 +940,7 @@ class AgentRunner:
                 context_wrapper=context_wrapper,
                 run_config=run_config,
                 previous_response_id=previous_response_id,
+                auto_previous_response_id=auto_previous_response_id,
                 conversation_id=conversation_id,
                 session=session,
             )
@@ -1026,6 +1069,7 @@ class AgentRunner:
         context_wrapper: RunContextWrapper[TContext],
         run_config: RunConfig,
         previous_response_id: str | None,
+        auto_previous_response_id: bool,
         conversation_id: str | None,
         session: Session | None,
     ):
@@ -1038,9 +1082,16 @@ class AgentRunner:
         should_run_agent_start_hooks = True
         tool_use_tracker = AgentToolUseTracker()
 
-        if conversation_id is not None or previous_response_id is not None:
+        # Check whether to enable OpenAI server-managed conversation
+        if (
+            conversation_id is not None
+            or previous_response_id is not None
+            or auto_previous_response_id
+        ):
             server_conversation_tracker = _ServerConversationTracker(
-                conversation_id=conversation_id, previous_response_id=previous_response_id
+                conversation_id=conversation_id,
+                previous_response_id=previous_response_id,
+                auto_previous_response_id=auto_previous_response_id,
             )
         else:
             server_conversation_tracker = None
@@ -1069,6 +1120,9 @@ class AgentRunner:
                     break
 
                 all_tools = await cls._get_all_tools(current_agent, context_wrapper)
+                await RunImpl.initialize_computer_tools(
+                    tools=all_tools, context_wrapper=context_wrapper
+                )
 
                 # Start an agent span if we don't have one. This span is ended if the current
                 # agent changes, or if the agent loop ends.
@@ -1166,8 +1220,7 @@ class AgentRunner:
 
                     if isinstance(turn_result.next_step, NextStepHandoff):
                         # Save the conversation to session if enabled (before handoff)
-                        # Note: Non-streaming path doesn't save handoff turns immediately,
-                        # but streaming needs to for graceful cancellation support
+                        # Streaming needs to save for graceful cancellation support
                         if session is not None:
                             should_skip_session_save = (
                                 await AgentRunner._input_guardrail_tripwire_triggered_for_stream(
@@ -1280,10 +1333,22 @@ class AgentRunner:
                     logger.debug(
                         f"Error in streamed_result finalize for agent {current_agent.name} - {e}"
                     )
+            try:
+                await dispose_resolved_computers(run_context=context_wrapper)
+            except Exception as error:
+                logger.warning("Failed to dispose computers after streamed run: %s", error)
             if current_span:
                 current_span.finish(reset_current=True)
             if streamed_result.trace:
                 streamed_result.trace.finish(reset_current=True)
+
+            # Ensure QueueCompleteSentinel is always put in the queue when the stream ends,
+            # even if an exception occurs before the inner try/except block (e.g., in
+            # _save_result_to_session at the beginning). Without this, stream_events()
+            # would hang forever waiting for more items.
+            if not streamed_result.is_complete:
+                streamed_result.is_complete = True
+                streamed_result._event_queue.put_nowait(QueueCompleteSentinel())
 
     @classmethod
     async def _run_single_turn_streamed(
@@ -1302,10 +1367,15 @@ class AgentRunner:
         emitted_reasoning_item_ids: set[str] = set()
 
         if should_run_agent_start_hooks:
+            agent_hook_context = AgentHookContext(
+                context=context_wrapper.context,
+                usage=context_wrapper.usage,
+                turn_input=ItemHelpers.input_to_new_input_list(streamed_result.input),
+            )
             await asyncio.gather(
-                hooks.on_agent_start(context_wrapper, agent),
+                hooks.on_agent_start(agent_hook_context, agent),
                 (
-                    agent.hooks.on_start(context_wrapper, agent)
+                    agent.hooks.on_start(agent_hook_context, agent)
                     if agent.hooks
                     else _coro.noop_coroutine()
                 ),
@@ -1360,6 +1430,7 @@ class AgentRunner:
         previous_response_id = (
             server_conversation_tracker.previous_response_id
             if server_conversation_tracker
+            and server_conversation_tracker.previous_response_id is not None
             else None
         )
         conversation_id = (
@@ -1525,10 +1596,15 @@ class AgentRunner:
     ) -> SingleStepResult:
         # Ensure we run the hooks before anything else
         if should_run_agent_start_hooks:
+            agent_hook_context = AgentHookContext(
+                context=context_wrapper.context,
+                usage=context_wrapper.usage,
+                turn_input=ItemHelpers.input_to_new_input_list(original_input),
+            )
             await asyncio.gather(
-                hooks.on_agent_start(context_wrapper, agent),
+                hooks.on_agent_start(agent_hook_context, agent),
                 (
-                    agent.hooks.on_start(context_wrapper, agent)
+                    agent.hooks.on_start(agent_hook_context, agent)
                     if agent.hooks
                     else _coro.noop_coroutine()
                 ),
@@ -1798,6 +1874,7 @@ class AgentRunner:
         previous_response_id = (
             server_conversation_tracker.previous_response_id
             if server_conversation_tracker
+            and server_conversation_tracker.previous_response_id is not None
             else None
         )
         conversation_id = (
